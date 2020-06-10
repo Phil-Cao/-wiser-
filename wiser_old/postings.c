@@ -117,34 +117,33 @@ calc_golomb_params(int m, int *b, int *t)
  * @param[in,out] bit 待解码数据的起始比特
  * @return 解码后的数值
  */
-static inline int
-golomb_decoding(int m, int b, int t,
+static inline int golomb_decoding(int m, int b, int t,
                 const char **buf, const char *buf_end, unsigned char *bit)
 {
   int n = 0;
 
   /* decode (n / m) with unary code */
-  while (read_bit(buf, buf_end, bit) == 1) {
-    n += m;
+  while (read_bit(buf, buf_end, bit) == 1) {//28
+    n += m;//29
   }
   /* decode (n % m) */
-  if (m > 1) {
+  if (m > 1) {//30
     int i, r = 0;
-    for (i = 0; i < b - 1; i++) {
-      int z = read_bit(buf, buf_end, bit);
+    for (i = 0; i < b - 1; i++) {//31
+      int z = read_bit(buf, buf_end, bit);//32
       if (z == -1) { print_error("invalid golomb code"); break; }
-      r = (r << 1) | z;
+      r = (r << 1) | z;//33
     }
-    if (r >= t) {
-      int z = read_bit(buf, buf_end, bit);
+    if (r >= t) {//34
+      int z = read_bit(buf, buf_end, bit);//35
       if (z == -1) {
         print_error("invalid golomb code");
       } else {
-        r = (r << 1) | z;
-        r -= t;
+        r = (r << 1) | z;//36
+        r -= t;//37
       }
     }
-    n += r;
+    n += r;//38
   }
   return n;
 }
@@ -187,15 +186,14 @@ static inline void golomb_encoding(int m, int b, int t, int n, buffer *buf)
  * @param[out] postings_len 解码后的倒排列表中的元素数
  * @retval 0 成功
  */
-static int
-decode_postings_golomb(const char *postings_e, int postings_e_size,
+static int decode_postings_golomb(const char *postings_e, int postings_e_size,
                        postings_list **postings, int *postings_len)
 {
   const char *pend;
   unsigned char bit;
 
   pend = postings_e + postings_e_size;
-  bit = 0x80;
+  bit = 0x80;//21
   *postings = NULL;
   *postings_len = 0;
   {
@@ -204,15 +202,15 @@ decode_postings_golomb(const char *postings_e, int postings_e_size,
     {
       int m, b, t, pre_document_id = 0;
 
-      docs_count = *((int *)postings_e);
+      docs_count = *((int *)postings_e);//22
       postings_e += sizeof(int);
-      m = *((int *)postings_e);
+      m = *((int *)postings_e);//23
       postings_e += sizeof(int);
       calc_golomb_params(m, &b, &t);
-      for (i = 0; i < docs_count; i++) {
-        int gap = golomb_decoding(m, b, t, &postings_e, pend, &bit);
+      for (i = 0; i < docs_count; i++) {//24
+        int gap = golomb_decoding(m, b, t, &postings_e, pend, &bit);//25
         if ((pl = malloc(sizeof(postings_list)))) {
-          pl->document_id = pre_document_id + gap + 1;
+          pl->document_id = pre_document_id + gap + 1;//26
           utarray_new(pl->positions, &ut_int_icd);
           LL_APPEND(*postings, pl);
           (*postings_len)++;
@@ -222,7 +220,7 @@ decode_postings_golomb(const char *postings_e, int postings_e_size,
         }
       }
     }
-    if (bit != 0x80) { postings_e++; bit = 0x80; }
+    if (bit != 0x80) { postings_e++; bit = 0x80; }//27
     for (i = 0, pl = *postings; i < docs_count; i++, pl = pl->next) {
       int j, mp, bp, tp, position = -1;
 
