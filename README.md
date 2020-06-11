@@ -645,19 +645,74 @@ l 每当小倒排索引增长到一定大小，就将其与存储器上的倒排
 
 ### Search（）函数
 
- 
+```C
+/**
+ * 进行全文检索
+ * @param[in] env 存储着应用程序运行环境的结构体
+ * @param[in] query 查询
+ */
+void search(wiser_env *env, const char *query)
+{
+  int query32_len;
+  UTF32Char *query32;
 
-首先，我们将查询字符串的编码由 UTF-8 转换成了 UTF-32（❶）。
+  if (!utf8toutf32(query, strlen(query), &query32, &query32_len)) {
+    search_results *results = NULL;
 
-随后判断了查询字符串的长度是否大于 N-gram中 N 的取值（❷）。如果长度大于 N，就调用函数 split_query_to_tokens()，将词元从查询字符串中提取出来（❸）。
+    if (query32_len < env->token_len) {
+      print_error("too short query.");
+    } else {
+      query_token_hash *query_tokens = NULL;
+      split_query_to_tokens(
+        env, query32, query32_len, env->token_len, &query_tokens);
+      search_docs(env, &results, query_tokens);
+    }
 
-接下来，以刚刚提取出来的词元作为参数，调用函数 search_docs()，开始进行检索处理（❹）。
+    print_search_results(env, results);
 
-最后在❺的步骤中，调用了用于打印检索结果的函数 print_search_results()。至此，检索处理的流程就结束了。函数 print_search_results() 会先将检索结果从 results 中逐一取出，然后以检索结果中的文档编号为查询条件，从文档数据库中取出相应的文档标题，最后输出获取到的标题和检索的得分。
+    free(query32);
+  }
+}
+
+```
+
+首先，我们将查询字符串的编码由 UTF-8 转换成了 UTF-32。
+
+随后判断了查询字符串的长度是否大于 N-gram中 N 的取值。如果长度大于 N，就调用函数 split_query_to_tokens()，将词元从查询字符串中提取出来。
+
+接下来，以刚刚提取出来的词元作为参数，调用函数 search_docs()，开始进行检索处理。
+
+最后的步骤中，调用了用于打印检索结果的函数 print_search_results()。至此，检索处理的流程就结束了。函数 print_search_results() 会先将检索结果从 results 中逐一取出，然后以检索结果中的文档编号为查询条件，从文档数据库中取出相应的文档标题，最后输出获取到的标题和检索的得分。
 
 ### split_query_to_tokens() 函数
 
  
+
+```C
+/**
+ * 从查询字符串中提取出词元的信息
+ * @param[in] env 存储着应用程序运行环境的结构体
+ * @param[in] text 查询字符串
+ * @param[in] text_len 查询字符串的长度
+ * @param[in] n N-gram中N的取值
+ * @param[in,out] query_tokens 按词元编号存储位置信息序列的关联数组
+ *                             若传入的是指向NULL的指针，则新建一个关联数组
+ * @retval 0 成功
+ * @retval -1 失败
+ */
+int
+split_query_to_tokens(wiser_env *env,
+                      const UTF32Char *text,
+                      const unsigned int text_len,
+                      const int n, query_token_hash **query_tokens)
+{
+  return text_to_postings_lists(env,
+                                0, /* 将document_id设为0 */
+                                text, text_len, n,
+                                (inverted_index_hash **)query_tokens);
+}
+
+```
 
 从源代码可以看出，该函数实际上就是又去调用了在第 3 章讲解过的函数 text_to_postings_lists()。之所以这样做，是因为从字符串中生成倒排列表的处理过程，和从查询中提取出词元后再取出各词元位置信息的处理过程有很多共通之处。
 
@@ -665,7 +720,7 @@ l 每当小倒排索引增长到一定大小，就将其与存储器上的倒排
 
 ## 检索处理流程的具体示例
 
- 
+ ![image-20200610101328836](C:\Users\曹泽宇\AppData\Roaming\Typora\typora-user-images\image-20200610101328836.png)
 
 首先，我们将查询字符串分割成了 3 个词元 —— “搜索 ”“索引”“引擎”。然后，分别扫描关联到这 3 个词元上的倒排列表。如果能够找到一个在所有倒排列表中都出现过的文档编号，那么就将它所指向的文档加入到候选检索结果中。
 
@@ -1480,5 +1535,164 @@ static inline int golomb_decoding(int m, int b, int t,
 
 根据以上的这些，我们已经可以实现一个功能完备的搜索引擎了。
 
+# wiser的优化及参数的调整
 
+wiser 是一个简单的搜索引擎，希望可以理解搜索引擎的核心部分。因 此，要想使之成为一个实用的搜索引擎，还需要大量的优化工作。
 
+##  提高检索处理的效率
+
+### 优化检索处理
+
+在 wiser 现有的检索处理过程中，我们采用了与构建倒排索引时同样的分割方法，即每次向后错开 1 个字符，将查询分割成了 bi-gram的词元序列，并检查了分割出来的词元在文档中是 否是按顺序排列的。在这个过程中有些地方是可以优化的。 
+
+下面我们就举例说明。假设我们用 bi-gram的词元为文档“自制搜索引擎”构建出了如下的倒排索引。倒排索引中所有的文档编号均为 ：
+
+- 自制:0;0 
+
+- 制搜:0;1 
+
+- 搜索:0;2 
+
+- 索引:0;3 
+
+- 引擎:0;4
+
+当通过查询字符串“自制搜索引擎”检索上述倒排索引时，只要将其分割成“自制”“搜索”“引擎”3 个词元，并观察到在文档中后一个词元的出现位置（偏移量）总是与前一个词元的出现位置 相距 2 个字符，就可以断定短语“自制搜索引擎”出现在了文档中。也就是说，对于由每次向后错开 1 个字符而形成的 bi-gram的词元构建的倒排索引而言，只需要将查询分割为若干个无 重复部分的词元序列即可。 
+
+通过这样的分割，就可以减少需要参与检索的词元的数量。这也就意味着这样的分割有助于减少关联到词元上的倒排列表的获取次数，从而降低对多个倒排列表中的出现位置信息进行 相邻判定时的比较处理的次数。在获取倒排列表时通常都会伴随着大量的 I/O 操作，而进行比较处理时又通常会消耗大量的 CPU 资源，因此只要减少了词元的数量，就能大幅度地提升 检索处理的效率。
+
+### 将查询分割为无重复部分的词元序列
+
+下面，我们来看一下如何将查询分割为无重复部分的词元序列。在这里，我们需要对函数 text_to_postings_lists() 进行改造，该函数会被从字符串中提取词元的函数 split_query_to_tokens() 所 调用。
+
+使用 N-gram进行分割时，改造后的常规做法是从查询字符串的起始位置开始不断地取出一组组无重复部分的 n 个字符。但是，当查询字符串的长度不能被 n 整除时，就会在最后留下一 个长度小于 n 的词元。遇到这种特殊情况时，我们要将末尾的 n 个字符作为 1 个词元。
+
+以“查询字符串”为例，我们先分别用 bi-gram和 tri-gram对其进行分割，分割结果如下所示。 
+
+- 使用 bi-gram的分割结果：“查询”“字符”“符串” 
+
+- 使用 tri-gram的分割结果：“查询字”“字符串” 
+
+像这样，当查询字符串的长度不能被 n 整除时，我们可以通过如下的策略，生成含有部分重复字符的词元。另外，我们将变量 position用作游标，指向查询中正在处理的字符。 
+
+- 当 position可以被 n 整除并且候选词元的长度不小于 n 时 →将该候选词元作为正式词元 
+
+- 当 position可以被 n 整除并且候选词元的长度小于 n 时 →将该候选词元的前一个候选词元作为词元 
+
+由于函数 ngram_next() 是通过每次向后错开 1 个字符来获取词元的，所以可以保证位于最后一个长度小于 n 的词元之前的候选词元其长度一定是 n 。因此，我们就需要定义 3 个新的变量 last_t_len、last_t 以及 last_position，用于存储前一个候选词元的信息。
+
+```C
+/**
+ * 为构成文档内容的字符串建立倒排列表的集合
+ * @param[in] env 存储着应用程序运行环境的结构体
+ * @param[in] document_id 文档编号。为0时表示把要查询的关键词作为处理对象
+ * @param[in] text 输入的字符串
+ * @param[in] text_len 输入的字符串的长度
+ * @param[in] n N-gram中N的取值
+ * @param[in,out] postings 倒排列表的数组（也可视作是指向小倒排索引的指针）。若传入的指针指向了NULL，
+ *                         则表示要新建一个倒排列表的数组（小倒排索引）。若传入的指针指向了之前就已经存在的倒排列表的数组，
+ *                         则表示要添加元素
+ * @retval 0 成功
+ * @retval -1 失败
+ */
+int text_to_postings_lists(wiser_env *env,
+                       const int document_id, const UTF32Char *text,
+                       const unsigned int text_len,
+                       const int n, inverted_index_hash **postings)
+{
+  /* FIXME: now same document update is broken. */
+  int t_len, position = 0;
+  const UTF32Char *t = text, *text_end = text + text_len;
+  int last_t_len = 0, last_position = 0;
+  const UTF32Char *last_t = NULL;
+    
+  inverted_index_hash *buffer_postings = NULL; 
+
+  for (; (t_len = ngram_next(t, text_end, n, &t)); t++, position++) {
+    int filtered_t_len = 0, filtered_position;
+    const UTF32Char *filtered_t = NULL;
+      
+    /* 在检索时，基本上是当position可以被n整除时才取出词元 */
+    if (document_id || ((position % n == 0) && t_len >= n)) {
+        filtered_t_len = t_len;
+        filtered_t = t;
+        filtered_position = position;
+    /* 但是，要保证最后一个词元含有n个字符 */
+    } else if (t_len < n) {
+        if (last_t_len && last_t) {
+          filtered_t_len = last_t_len;
+          filtered_t = last_t;
+          filtered_position = last_position;
+        } else {
+            break;
+        }
+    }
+
+    if (filtered_t_len && filtered_t) {
+      int retval, t_8_size;
+      char t_8[n * MAX_UTF8_SIZE];
+      
+      utf32toutf8(filtered_t, filtered_t_len, t_8, &t_8_size);
+      
+      retval = token_to_postings_list(env, document_id, t_8, t_8_size,
+                                      filtered_position, &buffer_postings);
+
+      if (retval) { return retval; }
+        
+        last_t_len = 0;
+        last_t = NULL;
+      } else {
+        last_t_len = t_len;
+        last_t = t;
+        last_position = position;
+      }
+  }
+```
+
+分别用优化前和优化后的 wiser 检索同一个查询后可以发现，检索结果的数量并未发生变化，而检索处理的速度则有所提升。但是由于索引中收录的文档非常多，而且查询的长度又没有达到足够的长度，所以也许并不能切实感到检索处理的速度提升了。
+
+## 禁用短语检索
+
+在 wiser 中，我们会将一个个二元组存储到倒排索引的倒排列表里，二元组中包括含有某个词元的文档编号和该词元出现的位置。这样的倒排列表称为单词级别的倒排列表。而且我们还 讲解过，通过单词级别的倒排列表可以准确地找出包含在查询中的短语。
+
+我们检索一个 3 字符的字符串。例如“第一个”。接下来，禁用短语检索后再检索一次“第一个”。
+
+可以看出，检索结果在数量上有较大的差距。禁用短语检索前能找到 154 条结果，而禁用短语检索后竟能找到 349 条结果。究其原因可以发现，无论“第一”还是“一个”都是会在大量文档 中出现的词元。在诸如“世界上第一部（架、本……）……”“……一个时代（系统、周期……）”等句子中，就经常会遇到虽然出现了“第一”和“一个”，但是却没有出现“第一个”的情况。
+
+## 改变检索结果的输出顺序
+
+### 作为检索结果排序核心的指标
+
+检索系统有时会产生大量的检索结果。此时即使是将检索结果原封不动地返回，用户也无法查阅完所有内容。因此更好的做法是根据某种指标进行评分，然后只将得分较高的文档作为 检索结果呈现给用户。
+
+下面我们就来介绍几个用于对检索结果排序的指标（属性）。
+
+####  TF-IDF
+
+TF 是 TermFrequency（词频）的缩写，用于描述特定词元在某个特定文档中的出现次数。IDF 是 Inverse Document Frequency（逆文档频率）的缩写，指在所有的文档中，出现过特定词元的文档数的倒数。TF-IDF 值就是上述 TF 和 IDF 的乘积。 
+
+假设某个词元在某个文档中的出现次数为 T ，总共有 A 个文档，并且某个词元至少出现过 1 次的文档数为 D ，那么 TF-IDF 值的计算公式如下所示：
+
+![image-20200611102748864](C:\Users\曹泽宇\AppData\Roaming\Typora\typora-user-images\image-20200611102748864.png)
+
+#### 文档的最后更新日期
+
+对于某些作为检索对象的文档集合，搜素引擎会根据文档的最后更新日期，而不是查询与文档的相关度，对检索结果进行排序。
+
+ 例如在 Twitter 的推文检索功能中，就是按照发布日期的降序来呈现检索到的推文的。之所以这样做，是因为用户想浏览的是“最近大家都在热议什么话题”。面对“用户想了解的是特定的 新闻以及大家对这条新闻的评论”这种需求，将发布日期最新的新闻放到最上面再自然不过了。而且，由于 Twitter 的用户界面在设计之初就是按照时间顺序列出推文的，所以检索结果也 沿用这种风格显示的话，浏览起来会更加方便。
+
+#### PageRank
+
+在对检索结果排序时，Google 会计算一种名为 PageRank 的独有指标，并将其结果作为决定 Web 检索结果呈现顺序的要素之一。 
+
+PageRank 的计算，是基于“从受欢迎的网页中精挑细选出的链接所指向的网页应该也很受欢迎吧”这种假设。具体来说，是基于以下 3 个推测。
+
+- 被很多网站的链接指向的网页从某种程度上来说是优质的、受欢迎的 
+
+- 被受欢迎网页上的链接指向的网页从某种程度上来说也是优质的 
+
+- 网页上的链接的数量与搜索引擎对链接目标网页的推荐程度呈反比
+
+由于 PageRank 的计算只与网页间的链接结构有关，所以计算时会完全忽略网页的内容。在这一点上，PageRank 与 TF-IDF 等计算时只参考文档内容的指标完全不同。 
+
+现有的 wiser 在输出前会根据 TF-IDF 值的大小对检索结果进行降序排列，尽管如此，能够在输出前使用除此之外的排序方式也是一个不错的选择。
